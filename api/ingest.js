@@ -1,4 +1,5 @@
 const { sendDiscordMessage } = require("../bot/discord");
+const { buildMinecraftEmbed } = require("../bot/formatDiscordEmbed");
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -57,21 +58,18 @@ module.exports = async (req, res) => {
       }
     }
 
-    let message = "";
     if (typeof body === "string") {
-      message = body;
-    } else if (typeof body?.message === "string") {
-      message = body.message;
-    } else if (typeof body?.content === "string") {
-      message = body.content;
-    }
-
-    if (!message || !message.trim()) {
-      json(res, 400, { ok: false, error: "Missing message" });
+      json(res, 400, { ok: false, error: "Expected JSON payload" });
       return;
     }
 
-    await sendDiscordMessage(message);
+    const embedPayload = buildMinecraftEmbed(body);
+    if (!embedPayload) {
+      json(res, 400, { ok: false, error: "Missing name or message" });
+      return;
+    }
+
+    await sendDiscordMessage(embedPayload);
     json(res, 200, { ok: true });
   } catch (err) {
     console.error(err);

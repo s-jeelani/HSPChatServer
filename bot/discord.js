@@ -2,7 +2,7 @@
 
 const https = require("https");
 
-function sendDiscordMessage(message) {
+function sendDiscordMessage(payload) {
   return new Promise((resolve, reject) => {
     const token = process.env.DISCORD_TOKEN;
     const channelId = process.env.DISCORD_CHANNEL_ID;
@@ -12,7 +12,8 @@ function sendDiscordMessage(message) {
       return;
     }
 
-    const body = JSON.stringify({ content: message });
+    const body =
+      payload && typeof payload === "object" ? JSON.stringify(payload) : JSON.stringify({ content: String(payload || "") });
     const options = {
       hostname: "discord.com",
       path: `/api/v10/channels/${channelId}/messages`,
