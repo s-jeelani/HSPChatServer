@@ -1,5 +1,4 @@
-const { sendDiscordMessage } = require("../bot/discord");
-const { buildMinecraftEmbed } = require("../bot/formatDiscordEmbed");
+const { sendDiscordMessage } = require("../bot/discordSend");
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -58,18 +57,26 @@ module.exports = async (req, res) => {
       }
     }
 
-    if (typeof body === "string") {
+    if (typeof body !== "object" || body === null) {
       json(res, 400, { ok: false, error: "Expected JSON payload" });
       return;
     }
 
-    const embedPayload = buildMinecraftEmbed(body);
-    if (!embedPayload) {
+    const name = typeof body?.name === "string" ? body.name.trim() : "";
+    const message = typeof body?.message === "string" ? body.message.trim() : "";
+
+    if (!name || !message) {
       json(res, 400, { ok: false, error: "Missing name or message" });
       return;
     }
 
-    await sendDiscordMessage(embedPayload);
+    const avatarUrl = `https://mc-heads.net/avatar/${encodeURIComponent(name)}/64`;
+
+    await sendDiscordMessage({
+      username: name,
+      avatar_url: avatarUrl,
+      content: message,
+    });
     json(res, 200, { ok: true });
   } catch (err) {
     console.error(err);

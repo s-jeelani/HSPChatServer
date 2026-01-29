@@ -2,7 +2,7 @@
 
 const https = require("https");
 
-function sendDiscordMessage(payload) {
+function sendDiscordMessage(body) {
   return new Promise((resolve, reject) => {
     const token = process.env.DISCORD_TOKEN;
     const channelId = process.env.DISCORD_CHANNEL_ID;
@@ -12,8 +12,7 @@ function sendDiscordMessage(payload) {
       return;
     }
 
-    const body =
-      payload && typeof payload === "object" ? JSON.stringify(payload) : JSON.stringify({ content: String(payload || "") });
+    const payload = JSON.stringify(body || {});
     const options = {
       hostname: "discord.com",
       path: `/api/v10/channels/${channelId}/messages`,
@@ -21,7 +20,7 @@ function sendDiscordMessage(payload) {
       headers: {
         Authorization: `Bot ${token}`,
         "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
+        "Content-Length": Buffer.byteLength(payload),
       },
     };
 
@@ -45,7 +44,7 @@ function sendDiscordMessage(payload) {
       reject(err);
     });
 
-    req.write(body);
+    req.write(payload);
     req.end();
   });
 }
