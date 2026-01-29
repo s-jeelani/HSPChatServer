@@ -1,0 +1,7 @@
+{
+  "name": "hsp-chat-server",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}
