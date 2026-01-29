@@ -4,21 +4,19 @@ const https = require("https");
 
 function sendDiscordMessage(body) {
   return new Promise((resolve, reject) => {
-    const token = process.env.DISCORD_TOKEN;
-    const channelId = process.env.DISCORD_CHANNEL_ID;
-
-    if (!token || !channelId) {
-      reject(new Error("Missing DISCORD_TOKEN or DISCORD_CHANNEL_ID env var"));
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) {
+      reject(new Error("Missing DISCORD_WEBHOOK_URL env var"));
       return;
     }
 
+    const url = new URL(webhookUrl);
     const payload = JSON.stringify(body || {});
     const options = {
-      hostname: "discord.com",
-      path: `/api/v10/channels/${channelId}/messages`,
+      hostname: url.hostname,
+      path: `${url.pathname}${url.search}`,
       method: "POST",
       headers: {
-        Authorization: `Bot ${token}`,
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
       },
@@ -36,7 +34,7 @@ function sendDiscordMessage(body) {
         }
 
         const detail = data ? `: ${data}` : "";
-        reject(new Error(`Discord API error ${res.statusCode}${detail}`));
+        reject(new Error(`Discord webhook error ${res.statusCode}${detail}`));
       });
     });
 
