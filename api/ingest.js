@@ -8,6 +8,10 @@ const KV_REST_API_URL = process.env.KV_REST_API_URL;
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
 const HAS_KV = Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
 const inMemoryRecentIds = [];
+const BLACKLISTED_WORDS = {
+  "@here": "<@630397659995439125>",
+  "@everyone": "<@630397659995439125>",
+}; // key is blacklisted word, value is word to be replaced with. Sorry Fataled...
 
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
@@ -53,6 +57,17 @@ function updateRecentIds(list, id) {
     next.shift();
   }
   return next;
+}
+
+function applyBlacklist(message) {
+  let sanitized = message;
+  for (const [needle, replacement] of Object.entries(BLACKLISTED_WORDS)) {
+    if (!needle) {
+      continue;
+    }
+    sanitized = sanitized.split(needle).join(replacement);
+  }
+  return sanitized;
 }
 
 async function kvGetJson(key) {
@@ -154,13 +169,14 @@ module.exports = async (req, res) => {
     }
 
     const name = typeof body?.name === "string" ? body.name.trim() : "";
-    const message = typeof body?.message === "string" ? body.message.trim() : "";
+    const rawMessage = typeof body?.message === "string" ? body.message.trim() : "";
 
-    if (!name || !message) {
+    if (!name || !rawMessage) {
       json(res, 400, { ok: false, error: "Missing name or message" });
       return;
     }
 
+    const message = applyBlacklist(rawMessage);
     const rawId = normalizeId(body?.id || body?.hash);
     const messageId = rawId || computeMessageId(name, message);
     const recentIds = await readRecentIds();
