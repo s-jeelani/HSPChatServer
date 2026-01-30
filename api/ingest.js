@@ -1,6 +1,13 @@
+const crypto = require("crypto");
 const { sendDiscordMessage } = require("../bot/discordSend");
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_RECENT_IDS = 5;
+const DEDUPE_KEY = process.env.DEDUPE_KEY || "hspchat:recent-message-ids";
+const KV_REST_API_URL = process.env.KV_REST_API_URL;
+const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
+const HAS_KV = Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
+const inMemoryRecentIds = [];
 
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
@@ -26,6 +33,90 @@ function json(res, status, payload) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
   res.end(JSON.stringify(payload));
+}
+
+function computeMessageId(name, message) {
+  return crypto.createHash("sha256").update(name).update("\n").update(message).digest("hex");
+}
+
+function normalizeId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  return String(value).trim();
+}
+
+function updateRecentIds(list, id) {
+  const next = Array.isArray(list) ? list.filter((item) => item !== id) : [];
+  next.push(id);
+  while (next.length > MAX_RECENT_IDS) {
+    next.shift();
+  }
+  return next;
+}
+
+async function kvGetJson(key) {
+  if (!HAS_KV) {
+    return null;
+  }
+
+  const res = await fetch(`${KV_REST_API_URL}/get/${encodeURIComponent(key)}`, {
+    headers: {
+      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+    },
+  });
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const data = await res.json();
+  if (!data || data.result == null) {
+    return null;
+  }
+
+  try {
+    if (typeof data.result === "string") {
+      return JSON.parse(data.result);
+    }
+    return data.result;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function kvSetJson(key, value) {
+  if (!HAS_KV) {
+    return false;
+  }
+
+  const res = await fetch(`${KV_REST_API_URL}/set/${encodeURIComponent(key)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ value: JSON.stringify(value) }),
+  });
+
+  return res.ok;
+}
+
+async function readRecentIds() {
+  const stored = await kvGetJson(DEDUPE_KEY);
+  if (Array.isArray(stored)) {
+    return stored.filter((item) => typeof item === "string");
+  }
+  return inMemoryRecentIds;
+}
+
+async function writeRecentIds(list) {
+  if (HAS_KV) {
+    await kvSetJson(DEDUPE_KEY, list);
+    return;
+  }
+  inMemoryRecentIds.length = 0;
+  inMemoryRecentIds.push(...list);
 }
 
 module.exports = async (req, res) => {
@@ -69,6 +160,18 @@ module.exports = async (req, res) => {
       json(res, 400, { ok: false, error: "Missing name or message" });
       return;
     }
+
+    const rawId = normalizeId(body?.id || body?.hash);
+    const messageId = rawId || computeMessageId(name, message);
+    const recentIds = await readRecentIds();
+
+    if (recentIds.includes(messageId)) {
+      json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
+      return;
+    }
+
+    const nextRecentIds = updateRecentIds(recentIds, messageId);
+    await writeRecentIds(nextRecentIds);
 
     const avatarUrl = `https://mc-heads.net/avatar/${encodeURIComponent(name)}/64`;
 
