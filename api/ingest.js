@@ -3,12 +3,6 @@ const { sendDiscordMessage } = require("../bot/discordSend");
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_RECENT_IDS = 5;
-const DEDUPE_KEY = process.env.DEDUPE_KEY || "hspchat:recent-message-ids";
-const DEDUPE_KEY_PREFIX = process.env.DEDUPE_KEY_PREFIX || "hspchat:message-id:";
-const DEDUPE_TTL_SECONDS = Number.parseInt(process.env.DEDUPE_TTL_SECONDS || "60", 10);
-const KV_REST_API_URL = process.env.KV_REST_API_URL;
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
-const HAS_KV = Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
 const inMemoryRecentIds = [];
 const inFlightIds = new Set();
 const BLACKLISTED_WORDS = {
@@ -73,93 +67,7 @@ function applyBlacklist(message) {
   return sanitized;
 }
 
-async function kvGetJson(key) {
-  if (!HAS_KV) {
-    return null;
-  }
-
-  const res = await fetch(`${KV_REST_API_URL}/get/${encodeURIComponent(key)}`, {
-    headers: {
-      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-    },
-  });
-
-  if (!res.ok) {
-    return null;
-  }
-
-  const data = await res.json();
-  if (!data || data.result == null) {
-    return null;
-  }
-
-  try {
-    if (typeof data.result === "string") {
-      return JSON.parse(data.result);
-    }
-    return data.result;
-  } catch (err) {
-    return null;
-  }
-}
-
-async function kvSetJson(key, value) {
-  if (!HAS_KV) {
-    return false;
-  }
-
-  const res = await fetch(`${KV_REST_API_URL}/set/${encodeURIComponent(key)}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ value: JSON.stringify(value) }),
-  });
-
-  return res.ok;
-}
-
-async function kvSetIfNotExists(key, value, ttlSeconds) {
-  if (!HAS_KV) {
-    return false;
-  }
-
-  const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 60;
-  const url = new URL(`${KV_REST_API_URL}/set/${encodeURIComponent(key)}`);
-  url.searchParams.set("NX", "1");
-  url.searchParams.set("EX", String(ttl));
-
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-      "Content-Type": "text/plain",
-    },
-    body: String(value),
-  });
-
-  if (!res.ok) {
-    return false;
-  }
-
-  const data = await res.json();
-  return data && data.result === "OK";
-}
-
-async function readRecentIds() {
-  const stored = await kvGetJson(DEDUPE_KEY);
-  if (Array.isArray(stored)) {
-    return stored.filter((item) => typeof item === "string");
-  }
-  return inMemoryRecentIds;
-}
-
-async function writeRecentIds(list) {
-  if (HAS_KV) {
-    await kvSetJson(DEDUPE_KEY, list);
-    return;
-  }
+function writeRecentIds(list) {
   inMemoryRecentIds.length = 0;
   inMemoryRecentIds.push(...list);
 }
@@ -214,43 +122,14 @@ module.exports = async (req, res) => {
     const messageId = rawId || computeMessageId(name, message);
     claimedMessageId = messageId;
 
-    let recentIds = null;
-
-    if (HAS_KV) {
-      const claimed = await kvSetIfNotExists(
-        `${DEDUPE_KEY_PREFIX}${messageId}`,
-        "1",
-        DEDUPE_TTL_SECONDS
-      );
-      if (!claimed) {
-        json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
-        return;
-      }
-    } else {
-      if (inFlightIds.has(messageId) || inMemoryRecentIds.includes(messageId)) {
-        json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
-        return;
-      }
-      inFlightIds.add(messageId);
-      inMemoryClaimed = true;
-      const nextRecentIds = updateRecentIds(inMemoryRecentIds, messageId);
-      writeRecentIds(nextRecentIds);
+    if (inFlightIds.has(messageId) || inMemoryRecentIds.includes(messageId)) {
+      json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
+      return;
     }
-
-    if (HAS_KV) {
-      recentIds = await readRecentIds();
-      if (recentIds.includes(messageId)) {
-        json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
-        return;
-      }
-    } else {
-      recentIds = inMemoryRecentIds;
-    }
-
-    if (HAS_KV) {
-      const nextRecentIds = updateRecentIds(recentIds, messageId);
-      await writeRecentIds(nextRecentIds);
-    }
+    inFlightIds.add(messageId);
+    inMemoryClaimed = true;
+    const nextRecentIds = updateRecentIds(inMemoryRecentIds, messageId);
+    writeRecentIds(nextRecentIds);
 
     const avatarUrl = `https://mc-heads.net/avatar/${encodeURIComponent(name)}/64`;
 
