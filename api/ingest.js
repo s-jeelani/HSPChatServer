@@ -4,10 +4,13 @@ const { sendDiscordMessage } = require("../bot/discordSend");
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_RECENT_IDS = 5;
 const DEDUPE_KEY = process.env.DEDUPE_KEY || "hspchat:recent-message-ids";
+const DEDUPE_KEY_PREFIX = process.env.DEDUPE_KEY_PREFIX || "hspchat:message-id:";
+const DEDUPE_TTL_SECONDS = Number.parseInt(process.env.DEDUPE_TTL_SECONDS || "60", 10);
 const KV_REST_API_URL = process.env.KV_REST_API_URL;
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
 const HAS_KV = Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
 const inMemoryRecentIds = [];
+const inFlightIds = new Set();
 const BLACKLISTED_WORDS = {
   "@here": "<@630397659995439125>",
   "@everyone": "<@630397659995439125>",
@@ -117,6 +120,33 @@ async function kvSetJson(key, value) {
   return res.ok;
 }
 
+async function kvSetIfNotExists(key, value, ttlSeconds) {
+  if (!HAS_KV) {
+    return false;
+  }
+
+  const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 60;
+  const url = new URL(`${KV_REST_API_URL}/set/${encodeURIComponent(key)}`);
+  url.searchParams.set("NX", "1");
+  url.searchParams.set("EX", String(ttl));
+
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      "Content-Type": "text/plain",
+    },
+    body: String(value),
+  });
+
+  if (!res.ok) {
+    return false;
+  }
+
+  const data = await res.json();
+  return data && data.result === "OK";
+}
+
 async function readRecentIds() {
   const stored = await kvGetJson(DEDUPE_KEY);
   if (Array.isArray(stored)) {
@@ -139,6 +169,9 @@ module.exports = async (req, res) => {
     json(res, 405, { ok: false, error: "Use POST" });
     return;
   }
+
+  let inMemoryClaimed = false;
+  let claimedMessageId = "";
 
   try {
     const contentType = String(req.headers["content-type"] || "");
@@ -179,15 +212,45 @@ module.exports = async (req, res) => {
     const message = applyBlacklist(rawMessage);
     const rawId = normalizeId(body?.id || body?.hash);
     const messageId = rawId || computeMessageId(name, message);
-    const recentIds = await readRecentIds();
+    claimedMessageId = messageId;
 
-    if (recentIds.includes(messageId)) {
-      json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
-      return;
+    let recentIds = null;
+
+    if (HAS_KV) {
+      const claimed = await kvSetIfNotExists(
+        `${DEDUPE_KEY_PREFIX}${messageId}`,
+        "1",
+        DEDUPE_TTL_SECONDS
+      );
+      if (!claimed) {
+        json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
+        return;
+      }
+    } else {
+      if (inFlightIds.has(messageId) || inMemoryRecentIds.includes(messageId)) {
+        json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
+        return;
+      }
+      inFlightIds.add(messageId);
+      inMemoryClaimed = true;
+      const nextRecentIds = updateRecentIds(inMemoryRecentIds, messageId);
+      writeRecentIds(nextRecentIds);
     }
 
-    const nextRecentIds = updateRecentIds(recentIds, messageId);
-    await writeRecentIds(nextRecentIds);
+    if (HAS_KV) {
+      recentIds = await readRecentIds();
+      if (recentIds.includes(messageId)) {
+        json(res, 200, { ok: true, skipped: true, reason: "duplicate", id: messageId });
+        return;
+      }
+    } else {
+      recentIds = inMemoryRecentIds;
+    }
+
+    if (HAS_KV) {
+      const nextRecentIds = updateRecentIds(recentIds, messageId);
+      await writeRecentIds(nextRecentIds);
+    }
 
     const avatarUrl = `https://mc-heads.net/avatar/${encodeURIComponent(name)}/64`;
 
@@ -200,5 +263,9 @@ module.exports = async (req, res) => {
   } catch (err) {
     console.error(err);
     json(res, 500, { ok: false, error: String(err?.message || err) });
+  } finally {
+    if (inMemoryClaimed && claimedMessageId) {
+      inFlightIds.delete(claimedMessageId);
+    }
   }
 };
