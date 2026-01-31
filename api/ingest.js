@@ -6,8 +6,8 @@ const MAX_RECENT_IDS = 5;
 const inMemoryRecentIds = [];
 const inFlightIds = new Set();
 const BLACKLISTED_WORDS = {
-  "@here": "<@630397659995439125>",
-  "@everyone": "<@630397659995439125>",
+  "@here": "<I'm sorry Fataled>",
+  "@everyone": "<I'm sorry Fataled>",
 }; // key is blacklisted word, value is word to be replaced with. Sorry Fataled...
 
 function readRequestBody(req) {
